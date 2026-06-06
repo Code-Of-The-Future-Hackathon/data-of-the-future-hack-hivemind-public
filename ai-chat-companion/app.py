@@ -1,16 +1,13 @@
 import os
 import json
 import asyncio
-import shutil
-import random
 from typing import List, Optional
 from datetime import datetime
 
-import pandas as pd
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator # Changed: Added field_validator
+from pydantic import BaseModel, field_validator
 
 try:
     import google.generativeai as genai
@@ -31,222 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 2. DATASET LOADING & STATS ---
-EASYSHARE_DF = None
-DATASET_STATS = "Dataset not loaded."
-
-def load_dataset():
-    global EASYSHARE_DF, DATASET_STATS
-    try:
-        base_dir = os.path.dirname(__file__)
-        sav_path = os.path.join(base_dir, 'easyshare_data.sav')
-
-        if os.path.exists(sav_path):
-            # Prefer SPSS if available (Hackathon requirement)
-            EASYSHARE_DF = pd.read_spss(sav_path)
-            print(f"Loaded SPSS Dataset: {len(EASYSHARE_DF)} records.")
-            # Print columns to help map variables (e.g. age, gender)
-            print(f"Columns found: {list(EASYSHARE_DF.columns)[:10]}...") 
-        else:
-            print("No dataset found. Proceeding with empty dataframe.")
-            EASYSHARE_DF = pd.DataFrame()
-            
-        if not EASYSHARE_DF.empty:
-            EASYSHARE_DF.columns = [c.lower() for c in EASYSHARE_DF.columns]
-
-            # --- Label mappings (basic) ---
-            label_map_sphus = {
-                1: 'Excellent', 2: 'Very good', 3: 'Good', 4: 'Fair', 5: 'Poor'
-            }
-            label_map_br015 = {
-                1: 'Daily', 2: 'More than once a week', 3: 'Once a week', 4: 'One to three times a month', 5: 'Hardly ever or never'
-            }
-            label_map_ep005 = {
-                1: 'Employed', 2: 'Unemployed', 3: 'Retired', 4: 'Student', 5: 'Homemaker', 6: 'Disabled', 7: 'Other'
-            }
-            label_map_mar = {
-                1: 'Married/Registered', 2: 'Separated', 3: 'Divorced', 4: 'Widowed', 5: 'Never married'
-            }
-
-            def apply_labels(series, mapping):
-                try:
-                    return series.map(lambda x: mapping.get(x, x))
-                except Exception:
-                    return series
-
-            # Defensive conversions: always coerce, never raise
-            try:
-                if 'sphus' in EASYSHARE_DF.columns:
-                    sphus_num = pd.to_numeric(EASYSHARE_DF['sphus'], errors='coerce')
-                    EASYSHARE_DF['sphus_l'] = apply_labels(sphus_num, label_map_sphus)
-            except Exception:
-                pass
-
-            try:
-                if 'br015_' in EASYSHARE_DF.columns:
-                    br_num = pd.to_numeric(EASYSHARE_DF['br015_'], errors='coerce')
-                    EASYSHARE_DF['br015_l'] = apply_labels(br_num, label_map_br015)
-            except Exception:
-                pass
-
-            try:
-                if 'ep005_' in EASYSHARE_DF.columns:
-                    ep_num = pd.to_numeric(EASYSHARE_DF['ep005_'], errors='coerce')
-                    EASYSHARE_DF['ep005_l'] = apply_labels(ep_num, label_map_ep005)
-            except Exception:
-                pass
-
-            try:
-                if 'mar_stat' in EASYSHARE_DF.columns:
-                    mar_num = pd.to_numeric(EASYSHARE_DF['mar_stat'], errors='coerce')
-                    EASYSHARE_DF['mar_stat_l'] = apply_labels(mar_num, label_map_mar)
-            except Exception:
-                pass
-
-            # --- Core stats ---
-            total = len(EASYSHARE_DF)
-
-            # Age metrics
-            avg_age = 'N/A'
-            age_bins_str = ''
-            if 'age' in EASYSHARE_DF.columns:
-                age_series = EASYSHARE_DF['age']
-                if age_series.dtype.name == 'category':
-                    age_series = age_series.astype(str)
-                numeric_age = pd.to_numeric(age_series, errors='coerce')
-                try:
-                    avg_age = round(numeric_age.mean(), 1)
-                except Exception:
-                    pass
-                # Histogram bins (broad view)
-                bins = [0, 30, 40, 50, 60, 70, 80, 120]
-                labels = ['<30', '30-39', '40-49', '50-59', '60-69', '70-79', '80+']
-                age_binned = pd.cut(numeric_age, bins=bins, labels=labels, right=False)
-                age_counts = age_binned.value_counts(normalize=True).sort_index()
-                age_bins_str = ', '.join([f"{idx}: {val:.1%}" for idx, val in age_counts.items()])
-
-            # Top locations (country/location)
-            loc_counts = ''
-            for col in ['location', 'country', 'birth_country']:
-                if col in EASYSHARE_DF.columns:
-                    top_locs = EASYSHARE_DF[col].value_counts().head(5).to_dict()
-                    loc_counts = f"Top {col.title()}: {top_locs}"
-                    break
-
-            # Gender distribution
-            gender_dist = ''
-            if 'female' in EASYSHARE_DF.columns:
-                g_counts = EASYSHARE_DF['female'].value_counts(normalize=True).to_dict()
-                g_str = ', '.join([f"female={int(k)}: {v:.1%}" for k, v in g_counts.items()])
-                gender_dist = f"Gender Split: {g_str}"
-
-            # Health status
-            health_dist = ''
-            src = 'sphus_l' if 'sphus_l' in EASYSHARE_DF.columns else ('sphus' if 'sphus' in EASYSHARE_DF.columns else None)
-            if src:
-                h_counts = EASYSHARE_DF[src].value_counts(normalize=True).head(5).to_dict()
-                h_str = ', '.join([f"{k}: {v:.1%}" for k, v in h_counts.items()])
-                health_dist = f"Self-Perceived Health: {h_str}"
-
-            # Activity frequency
-            activity_dist = ''
-            src = 'br015_l' if 'br015_l' in EASYSHARE_DF.columns else ('br015_' if 'br015_' in EASYSHARE_DF.columns else None)
-            if src:
-                a_counts = EASYSHARE_DF[src].value_counts(normalize=True).head(5).to_dict()
-                a_str = ', '.join([f"{k}: {v:.1%}" for k, v in a_counts.items()])
-                activity_dist = f"Vigorous Activity: {a_str}"
-
-            # Employment
-            emp_dist = ''
-            src = 'ep005_l' if 'ep005_l' in EASYSHARE_DF.columns else ('ep005_' if 'ep005_' in EASYSHARE_DF.columns else None)
-            if src:
-                e_counts = EASYSHARE_DF[src].value_counts(normalize=True).head(5).to_dict()
-                e_str = ', '.join([f"{k}: {v:.1%}" for k, v in e_counts.items()])
-                emp_dist = f"Employment: {e_str}"
-
-            # Smoking & BMI summaries
-            smoking_rate = ''
-            if 'ever_smoked' in EASYSHARE_DF.columns:
-                sm_counts = EASYSHARE_DF['ever_smoked'].value_counts(normalize=True).to_dict()
-                sm_str = ', '.join([f"ever_smoked={k}: {v:.1%}" for k, v in sm_counts.items()])
-                smoking_rate = f"Smoking History: {sm_str}"
-
-            bmi_summary = ''
-            bmi_col = 'bmi'
-            if bmi_col in EASYSHARE_DF.columns:
-                bmi_numeric = pd.to_numeric(EASYSHARE_DF[bmi_col], errors='coerce')
-                mean_bmi = bmi_numeric.mean()
-                over_30 = (bmi_numeric >= 30).mean()
-                bmi_summary = f"BMI Avg: {mean_bmi:.1f}, Obesity (BMI>=30): {over_30:.1%}"
-
-            # CASP well-being
-            casp_summary = ''
-            if 'casp' in EASYSHARE_DF.columns:
-                try:
-                    casp_num = pd.to_numeric(EASYSHARE_DF['casp'], errors='coerce')
-                    casp_summary = f"CASP Avg: {casp_num.mean():.1f}"
-                except Exception:
-                    pass
-
-            # --- Insights ---
-            insights = []
-            # Health & Activity Insight
-            if 'sphus_l' in EASYSHARE_DF.columns and 'br015_l' in EASYSHARE_DF.columns:
-                healthy = EASYSHARE_DF[EASYSHARE_DF['sphus_l'].isin(['Excellent', 'Very good'])]
-                if not healthy.empty:
-                    active_counts = healthy['br015_l'].value_counts(normalize=True)
-                    vigorous_pct = active_counts.get('More than once a week', 0) * 100
-                    insights.append(f"Among those in excellent/very good health, {vigorous_pct:.1f}% exercise >1x/week.")
-            # CASP by marital status
-            if 'casp' in EASYSHARE_DF.columns and 'mar_stat_l' in EASYSHARE_DF.columns:
-                try:
-                    EASYSHARE_DF['casp_num'] = pd.to_numeric(EASYSHARE_DF['casp'], errors='coerce')
-                    avg_casp = EASYSHARE_DF.groupby('mar_stat_l')['casp_num'].mean().sort_values(ascending=False)
-                    if not avg_casp.empty:
-                        best_status = avg_casp.index[0]
-                        insights.append(f"Highest CASP average observed in: {best_status}.")
-                except Exception:
-                    pass
-            # Smoking vs BMI (simple signal)
-            if 'ever_smoked' in EASYSHARE_DF.columns and bmi_col in EASYSHARE_DF.columns:
-                try:
-                    bmi_numeric = pd.to_numeric(EASYSHARE_DF[bmi_col], errors='coerce')
-                    grp = pd.DataFrame({'bmi': bmi_numeric, 'smoked': EASYSHARE_DF['ever_smoked']}).dropna()
-                    if not grp.empty:
-                        diff = grp.groupby('smoked')['bmi'].mean()
-                        if set(diff.index) >= {0,1}:
-                            delta = diff.get(1, float('nan')) - diff.get(0, float('nan'))
-                            insights.append(f"Average BMI difference (ever smoked vs not): {delta:.1f}.")
-                except Exception:
-                    pass
-
-            DATASET_INSIGHTS = "\n".join(insights)
-            sections = [
-                f"Total Records: {total}",
-                f"Average Age: {avg_age}",
-                (f"Age Bins: {age_bins_str}" if age_bins_str else None),
-                (loc_counts or None),
-                (gender_dist or None),
-                (health_dist or None),
-                (activity_dist or None),
-                (emp_dist or None),
-                (smoking_rate or None),
-                (bmi_summary or None),
-                (casp_summary or None),
-            ]
-            summary_lines = [s for s in sections if s]
-            DATASET_STATS = "\n".join(summary_lines) + ("\n\nDATASET INSIGHTS\n" + DATASET_INSIGHTS if DATASET_INSIGHTS else "")
-            
-    except Exception as e:
-        print(f"Error loading dataset: {e}")
-        EASYSHARE_DF = pd.DataFrame()
-        DATASET_STATS = f"Error loading data: {str(e)}"
-
-@app.on_event("startup")
-async def startup_event():
-    load_dataset()
-
-# --- 3. GOOGLE GEMINI CONFIGURATION ---
+# --- 2. GOOGLE GEMINI CONFIGURATION ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 MODEL = None
 if genai and GEMINI_API_KEY:
@@ -368,9 +150,6 @@ async def generate_feedback_stream(agent: dict, relevant_matches: list):
 
     prompt = f"""
     You are an AI Analyst for the 'Hivemind' system.
-
-    GLOBAL DATASET STATS (EasyShare Data):
-    {DATASET_STATS}
     {query_context}
 
     AGENT PROFILE:
@@ -478,30 +257,6 @@ async def milestones_stream(payload: MilestoneRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "model_ready": bool(MODEL)}
-
-@app.post("/api/upload-dataset")
-async def upload_dataset(file: UploadFile = File(...)):
-    try:
-        base_dir = os.path.dirname(__file__)
-        file_location = ""
-        
-        if file.filename.endswith('.sav'):
-            file_location = os.path.join(base_dir, 'easyshare_data.sav')
-        else:
-            return {"error": "Invalid file format. Please upload .sav"}
-            
-        with open(file_location, "wb+") as file_object:
-            shutil.copyfileobj(file.file, file_object)
-            
-        # Reload the dataset to apply changes immediately
-        load_dataset()
-        
-        return {
-            "message": f"File uploaded successfully: {file.filename}", 
-            "stats": DATASET_STATS
-        }
-    except Exception as e:
-        return {"error": str(e)}
 
 # Run with: uvicorn aiBackend.app:app --reload
 if __name__ == "__main__":
