@@ -1,0 +1,212 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  username      String?   @unique
+  email         String    @unique
+  password      String?
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+
+  bio           String?
+  
+  // Demographics
+  dateOfBirth        DateTime?
+  location           String?
+  gender             String?
+  education          String?
+  maritalStatus      String?
+
+  interests          String[]
+  
+  householdSize      Int?
+  childrenCount      Int?
+  socialSupportLevel String?
+  
+  childhoodMathSkill Int?
+  booksInHome        String?
+  
+  // Health
+  bmi                Float?
+  smoking            String?
+  alcoholConsumption String?
+  mentalHealthScore  Int?
+  
+  // Work
+  employmentStatus   String?
+  incomePercentile   Int?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sentMessages     Message[] @relation("SentMessages")
+  receivedMessages Message[] @relation("ReceivedMessages")
+
+  score         Int       @default(0)
+  level         Int       @default(1)
+  
+  milestones    Milestone[]
+  quests        Quest[]
+
+  followedBy    Follows[] @relation("following")
+  following     Follows[] @relation("follower")
+
+  activityLogs ActivityLog[]
+}
+
+model Follows {
+  followerId  String
+  followingId String
+
+  follower    User @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+
+  @@id([followerId, followingId])
+}
+
+
+model Milestone {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  status      QuestStatus @default(IN_PROGRESS)
+  progress    Float       @default(0)
+  
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  quests      Quest[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Quest {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  category    String?
+  difficulty  Difficulty @default(MEDIUM)
+  status      QuestStatus @default(IN_PROGRESS)
+  
+  completionPoints Int @default(50)
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  milestoneId String?
+  milestone   Milestone? @relation(fields: [milestoneId], references: [id])
+
+  tasks       Task[]
+
+  completedAt DateTime?
+  deadline    DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Task {
+  id          String   @id @default(cuid())
+  content     String
+  isCompleted Boolean  @default(false)
+  points      Int      @default(10)
+
+  completedAt DateTime?
+
+  questId     String
+  quest       Quest    @relation(fields: [questId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  action    String   // e.g., "TASK_COMPLETE", "QUEST_COMPLETE"
+  xpGained  Int
+  createdAt DateTime @default(now())
+}
+
+enum QuestStatus {
+  LOCKED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+  EPIC
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  content   String
+  createdAt DateTime @default(now())
+  attachments Attachment[]
+
+  senderId    String
+  sender      User     @relation("SentMessages", fields: [senderId], references: [id])
+
+  receiverId  String
+  receiver    User     @relation("ReceivedMessages", fields: [receiverId], references: [id])
+}
+
+model Attachment {
+  id        String  @id @default(cuid())
+  url       String
+  messageId String
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model Account {
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([provider, providerAccountId])
+}
+
+model Session {
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+  @@id([identifier, token])
+}

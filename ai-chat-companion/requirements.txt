@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+google-generativeai
+pydantic
+pandas
+pyreadstat
+python-multipart

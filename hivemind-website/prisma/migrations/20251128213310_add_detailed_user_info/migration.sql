@@ -1,0 +1,16 @@
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN     "age" INTEGER,
+ADD COLUMN     "alcoholConsumption" TEXT,
+ADD COLUMN     "bmi" DOUBLE PRECISION,
+ADD COLUMN     "booksInHome" TEXT,
+ADD COLUMN     "childhoodMathSkill" INTEGER,
+ADD COLUMN     "childrenCount" INTEGER,
+ADD COLUMN     "education" TEXT,
+ADD COLUMN     "employmentStatus" TEXT,
+ADD COLUMN     "gender" TEXT,
+ADD COLUMN     "householdSize" INTEGER,
+ADD COLUMN     "incomePercentile" INTEGER,
+ADD COLUMN     "maritalStatus" TEXT,
+ADD COLUMN     "mentalHealthScore" INTEGER,
+ADD COLUMN     "smoking" TEXT,
+ADD COLUMN     "socialSupportLevel" TEXT;
